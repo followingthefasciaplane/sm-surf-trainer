@@ -1,3 +1,6 @@
+// This is kind of all over the place right now.
+// There are reasons for using different implementations of the same thing at this stage.
+
 #include <sourcemod>
 #include <sdktools>
 #include <sdkhooks>
