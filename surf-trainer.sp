@@ -1,5 +1,6 @@
 // This is kind of all over the place right now.
 // There are reasons for using different implementations of the same thing at this stage.
+// PhysicsSimulate should ideally be used everywhere at some point
 
 #include <sourcemod>
 #include <sdktools>
