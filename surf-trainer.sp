@@ -1,5 +1,3 @@
-//work in progress
-
 #include <sourcemod>
 #include <sdktools>
 #include <sdkhooks>
@@ -347,11 +345,13 @@ void CheckVelocity(int client, float vOutVelocity[3]) {
     CopyVector(g_vVelocity[client], vOutVelocity);
 }
 
-bool IsPlayerOnSurfRamp(int client, float surfaceNormal[3]) {
-    float startPos[3], endPos[3];
+bool IsPlayerOnSurfRamp(int client, float surfaceNormal[3])
+{
+    float startPos[3], endPos[3], mins[3], maxs[3];
     GetClientAbsOrigin(client, startPos);
-    
-    // Directions to check (down, forward, backward, left, right)
+    GetClientMins(client, mins);
+    GetClientMaxs(client, maxs);
+
     float directions[][3] = {
         {0.0, 0.0, -1.0},
         {1.0, 0.0, 0.0},
@@ -359,17 +359,19 @@ bool IsPlayerOnSurfRamp(int client, float surfaceNormal[3]) {
         {0.0, 1.0, 0.0},
         {0.0, -1.0, 0.0}
     };
-    
-    for (int i = 0; i < sizeof(directions); i++) {
-        for (int j = 0; j < 3; j++) {
+
+    for (int i = 0; i < sizeof(directions); i++)
+    {
+        for (int j = 0; j < 3; j++)
+        {
             endPos[j] = startPos[j] + directions[i][j] * TRACE_DISTANCE;
         }
 
-        TR_TraceRayFilter(startPos, endPos, MASK_PLAYERSOLID, RayType_EndPoint, TraceFilter_World, client);
-
-        if (TR_DidHit()) {
+        if (TracePlayerBBox(client, startPos, endPos, MASK_PLAYERSOLID, mins, maxs))
+        {
             TR_GetPlaneNormal(null, surfaceNormal);
-            if (surfaceNormal[2] < MAX_SURFACE_NORMAL_Z && surfaceNormal[2] > MIN_SURFACE_NORMAL_Z) {
+            if (surfaceNormal[2] < MAX_SURFACE_NORMAL_Z && surfaceNormal[2] > MIN_SURFACE_NORMAL_Z)
+            {
                 return true;
             }
         }
@@ -657,6 +659,40 @@ bool IsValidClient(int client) {
     return (client > 0 && client <= MaxClients && IsClientConnected(client) && IsClientInGame(client) && !IsFakeClient(client));
 }
 
+void AngleVectors(const float angles[3], float forward[3], float right[3], float up[3])
+{
+    float radX = DegToRad(angles[0]);
+    float radY = DegToRad(angles[1]);
+    float radZ = DegToRad(angles[2]);
+
+    float sp = Sine(radX), cp = Cosine(radX);
+    float sy = Sine(radY), cy = Cosine(radY);
+    float sr = Sine(radZ), cr = Cosine(radZ);
+
+    if (forward)
+    {
+        forward[0] = cp * cy;
+        forward[1] = cp * sy;
+        forward[2] = -sp;
+    }
+
+    if (right)
+    {
+        right[0] = -sr * sp * cy + cr * -sy;
+        right[1] = -sr * sp * sy + cr * cy;
+        right[2] = -sr * cp;
+    }
+
+    if (up)
+    {
+        up[0] = cr * sp * cy + -sr * -sy;
+        up[1] = cr * sp * sy + -sr * cy;
+        up[2] = cr * cp;
+    }
+}
+
+
+/*
 void AngleVectors(const float angles[3], float fw[3], float right[3], float up[3])
 {
     float sr, sp, sy, cr, cp, cy;
@@ -693,15 +729,40 @@ void AngleVectors(const float angles[3], float fw[3], float right[3], float up[3
         up[2] = cr * cp;
     }
 }
+*/
 
 void ZeroVector(float vec[3]) {
     vec[0] = vec[1] = vec[2] = 0.0;
 }
 
-void CopyVector(const float from[3], float to[3]) {
-    to[0] = from[0];
-    to[1] = from[1];
-    to[2] = from[2];
+void ClampVelocity(float velocity[3], float maxVelocity)
+{
+    for (int i = 0; i < 3; i++)
+    {
+        if (velocity[i] > maxVelocity)
+            velocity[i] = maxVelocity;
+        else if (velocity[i] < -maxVelocity)
+            velocity[i] = -maxVelocity;
+    }
+}
+
+void NormalizeVector(float in[3], float out[3])
+{
+    float length = GetVectorLength(in);
+    if (length > 0.0)
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            out[i] = in[i] / length;
+        }
+    }
+}
+
+void CopyVector(const float src[3], float dest[3])
+{
+    dest[0] = src[0];
+    dest[1] = src[1];
+    dest[2] = src[2];
 }
 
 public void OnPluginEnd() {
