@@ -1,7 +1,3 @@
-// This is kind of all over the place right now.
-// There are reasons for using different implementations of the same thing at this stage.
-// PhysicsSimulate should ideally be used everywhere at some point
-
 #include <sourcemod>
 #include <sdktools>
 #include <sdkhooks>
@@ -43,7 +39,7 @@ int g_iBoardEfficiencyIndex[MAXPLAYERS + 1];
 
 public Plugin myinfo = {
     name = "Surf Trainer",
-    author = "@feedbacker_s",
+    author = "Is it Your Name? Or is it My Name?",
     description = "A plugin to help players improve their surfing skills",
     version = PLUGIN_VERSION,
     url = "http://www.sourcemod.net/"
@@ -128,6 +124,9 @@ void PhysicsSimulate(int client, float vOutVelocity[3], float vOutOrigin[3]) {
     float vWishDir[3], vWishVel[3];
     float flWishSpeed;
     
+    // Copy the current velocity to g_vVelocity for simulation
+    CopyVector(vOutVelocity, g_vVelocity[client]);
+    
     StartGravity(client);
     AirMove(client, vWishDir, vWishVel, flWishSpeed);
     FinishGravity(client);
@@ -135,14 +134,20 @@ void PhysicsSimulate(int client, float vOutVelocity[3], float vOutOrigin[3]) {
     TryPlayerMove(client, vOutOrigin);
     
     // Final velocity check
-    CheckVelocity(client, vOutVelocity);
+    CheckVelocity(client);
     
-    vOutVelocity[2] = 0.0; // Zero out Z component
+    // Copy the simulated velocity back to vOutVelocity
+    CopyVector(g_vVelocity[client], vOutVelocity);
 }
 
-void SimulatePlayerMovement(int client) {
-    float vNewVelocity[3], vNewOrigin[3];
-    
+void SimulatePlayerMovement(int client)
+{
+    if (!IsValidClient(client) || !IsPlayerAlive(client))
+    {
+        return;
+    }
+
+    // Get current player position and velocity
     if (!GetClientAbsOrigin(client, g_vOrigin[client])) {
         LogError("Failed to get client origin for client %d", client);
         return;
@@ -156,6 +161,7 @@ void SimulatePlayerMovement(int client) {
     float surfaceNormal[3];
     bool isOnSurfRamp = IsPlayerOnSurfRamp(client, surfaceNormal);
 
+    // Handle ramp touch logic
     if (isOnSurfRamp) {
         if (!g_bTouchingRamp[client]) {
             g_bTouchingRamp[client] = true;
@@ -170,16 +176,19 @@ void SimulatePlayerMovement(int client) {
         g_bJustStartedTouchingRamp[client] = false;
     }
 
-    // Simulate physics
-    PhysicsSimulate(client, vNewVelocity, vNewOrigin);
+    // Simulate physics for next tick
+    float vSimulatedVelocity[3], vSimulatedOrigin[3];
+    CopyVector(g_vVelocity[client], vSimulatedVelocity);
+    CopyVector(g_vOrigin[client], vSimulatedOrigin);
+    PhysicsSimulate(client, vSimulatedVelocity, vSimulatedOrigin);
 
     // Visualize predicted trajectory
-    VisualizePredictedTrajectory(client, vNewVelocity);
+    VisualizePredictedTrajectory(client, vSimulatedVelocity);
 
     if (g_bDebugMode) {
         float xyVelocity[3];
-        xyVelocity[0] = vNewVelocity[0];
-        xyVelocity[1] = vNewVelocity[1];
+        xyVelocity[0] = vSimulatedVelocity[0];
+        xyVelocity[1] = vSimulatedVelocity[1];
         xyVelocity[2] = 0.0;
         float xySpeed = GetVectorLength(xyVelocity);
         PrintToConsole(client, "Predicted XY Velocity: %.2f %.2f | XY Speed: %.2f", 
@@ -241,10 +250,7 @@ void AirMove(int client, float vWishDir[3], float vWishVel[3], float &flWishSpee
 
 void AirAccelerate(int client, const float vWishDir[3], float flWishSpeed, float flAirAccelerate)
 {
-    float vVelocity[3];
-    GetEntPropVector(client, Prop_Data, "m_vecVelocity", vVelocity);
-
-    float flCurrentSpeed = GetVectorDotProduct(vVelocity, vWishDir);
+    float flCurrentSpeed = GetVectorDotProduct(g_vVelocity[client], vWishDir);
     float flAddSpeed = flWishSpeed - flCurrentSpeed;
 
     if (flAddSpeed <= 0)
@@ -252,7 +258,7 @@ void AirAccelerate(int client, const float vWishDir[3], float flWishSpeed, float
         return;
     }
 
-    float flAccelSpeed = flAirAccelerate * flWishSpeed * GetTickInterval();
+    float flAccelSpeed = flAirAccelerate * flWishSpeed * g_flTickInterval;
 
     if (flAccelSpeed > flAddSpeed)
     {
@@ -261,11 +267,8 @@ void AirAccelerate(int client, const float vWishDir[3], float flWishSpeed, float
 
     for (int i = 0; i < 3; i++)
     {
-        vVelocity[i] += flAccelSpeed * vWishDir[i];
+        g_vVelocity[client][i] += flAccelSpeed * vWishDir[i];
     }
-
-    // This is for debug right now, we dont want to be doing this later
-    // SetEntPropVector(client, Prop_Data, "m_vecVelocity", vVelocity);
 }
 
 void TryPlayerMove(int client, float vOutOrigin[3]) {
@@ -284,10 +287,10 @@ void TryPlayerMove(int client, float vOutOrigin[3]) {
         
         float vEnd[3];
         for (int i = 0; i < 3; i++) {
-            vEnd[i] = g_vOrigin[client][i] + vTotalLeftToMove[i] * flTimeLeft;
+            vEnd[i] = vOutOrigin[i] + vTotalLeftToMove[i] * flTimeLeft;
         }
         
-        TR_TraceHullFilter(g_vOrigin[client], vEnd, 
+        TR_TraceHullFilter(vOutOrigin, vEnd, 
             view_as<float>({-16.0, -16.0, 0.0}), 
             view_as<float>({16.0, 16.0, 72.0}), 
             MASK_PLAYERSOLID, 
@@ -305,13 +308,11 @@ void TryPlayerMove(int client, float vOutOrigin[3]) {
             
             CopyVector(vClippedVelocity, vTotalLeftToMove);
         } else {
-            CopyVector(g_vOrigin[client], vOutOrigin);
             CopyVector(vOriginalVelocity, g_vVelocity[client]);
             return;
         }
     }
     
-    CopyVector(g_vOrigin[client], vOutOrigin);
     CopyVector(vClippedVelocity, g_vVelocity[client]);
 }
 
@@ -337,7 +338,7 @@ void ClipVelocity(const float vIn[3], const float vNormal[3], float vOut[3], flo
     }
 }
 
-void CheckVelocity(int client, float vOutVelocity[3]) {
+void CheckVelocity(int client) {
     float flMaxVelocity = g_cvMaxVelocity.FloatValue;
     
     for (int i = 0; i < 3; i++) {
@@ -346,8 +347,6 @@ void CheckVelocity(int client, float vOutVelocity[3]) {
             g_vVelocity[client][i] = (g_vVelocity[client][i] > 0) ? flMaxVelocity : -flMaxVelocity;
         }
     }
-    
-    CopyVector(g_vVelocity[client], vOutVelocity);
 }
 
 bool IsPlayerOnSurfRamp(int client, float surfaceNormal[3])
@@ -456,7 +455,7 @@ void AnalyzeBoard(int client, const float surfaceNormal[3]) {
     float actualSpeedDiff = postBoardSpeed - (preBoardSpeed - gravityLoss);
     float idealSpeedDiff = simulatedSpeed - (preBoardSpeed - gravityLoss);
     
-    // Calculate speed efficiency
+    // Calculate speed efficiency (uncapped)
     float speedEfficiency;
     if (idealSpeedDiff >= 0) {
         speedEfficiency = (actualSpeedDiff / idealSpeedDiff) * 100.0;
@@ -465,9 +464,6 @@ void AnalyzeBoard(int client, const float surfaceNormal[3]) {
         speedEfficiency = ((preBoardSpeed - postBoardSpeed) / (preBoardSpeed - simulatedSpeed)) * 100.0;
         speedEfficiency = 100.0 - speedEfficiency; // Invert so that 100% means minimal speed loss
     }
-
-    // Clamp efficiency to a reasonable range
-    speedEfficiency = ClampFloat(speedEfficiency, -100.0, 200.0);
 
     // Calculate alignment using eye angles
     float eyeDirection[3];
@@ -616,9 +612,75 @@ void StoreEfficiency(int client, float efficiency) {
     g_iBoardEfficiencyIndex[client] = (g_iBoardEfficiencyIndex[client] + 1) % MAX_STATS_ENTRIES;
 }
 
-void VisualizePredictedTrajectory(int client, const float predictedVelocity[3])
+/*void SimulatePoint(int client, float position[3], float velocity[3], float time)
 {
-    float clientPos[3], endPos[3];
+    int steps = RoundToFloor(time / g_flTickInterval);
+    
+    for (int i = 0; i < steps; i++)
+    {
+        float simulatedVelocity[3], simulatedPosition[3];
+        CopyVector(velocity, simulatedVelocity);
+        CopyVector(position, simulatedPosition);
+        
+        PhysicsSimulate(client, simulatedVelocity, simulatedPosition);
+        
+        CopyVector(simulatedVelocity, velocity);
+        CopyVector(simulatedPosition, position);
+        
+        // Check for collision
+        TR_TraceRayFilter(position, simulatedPosition, MASK_PLAYERSOLID, RayType_EndPoint, TraceFilter_World, client);
+        
+        if (TR_DidHit())
+        {
+            float normal[3];
+            TR_GetPlaneNormal(null, normal);
+            
+            float newVelocity[3];
+            ClipVelocity(velocity, normal, newVelocity, 1.0);
+            CopyVector(newVelocity, velocity);
+            
+            TR_GetEndPosition(position);
+        }
+    }
+}
+*/
+
+
+void SimulatePoint(int client, float position[3], float velocity[3], float time)
+{
+    int steps = RoundToFloor(time / g_flTickInterval);
+    
+    for (int i = 0; i < steps; i++)
+    {
+        float simulatedVelocity[3], simulatedPosition[3];
+        CopyVector(velocity, simulatedVelocity);
+        CopyVector(position, simulatedPosition);
+        
+        PhysicsSimulate(client, simulatedVelocity, simulatedPosition);
+        
+        CopyVector(simulatedVelocity, velocity);
+        CopyVector(simulatedPosition, position);
+        
+        // Check for collision
+        TR_TraceRayFilter(position, simulatedPosition, MASK_PLAYERSOLID, RayType_EndPoint, TraceFilter_World, client);
+        
+        if (TR_DidHit())
+        {
+            float normal[3];
+            TR_GetPlaneNormal(null, normal);
+            
+            float newVelocity[3];
+            ClipVelocity(velocity, normal, newVelocity, 1.0);
+            CopyVector(newVelocity, velocity);
+            
+            TR_GetEndPosition(position);
+        }
+    }
+}
+
+void VisualizePredictedTrajectory(int client, const float initialVelocity[3])
+{
+    float clientPos[3];
     GetClientAbsOrigin(client, clientPos);
     
     int color[4] = {0, 255, 0, 255}; // Green color
@@ -628,19 +690,24 @@ void VisualizePredictedTrajectory(int client, const float predictedVelocity[3])
     // Precache and prepare beam sprite
     int beamSprite = PrecacheModel("materials/sprites/laserbeam.vmt");
     
+    float simulatedVelocity[3], simulatedPosition[3], prevPosition[3];
+    CopyVector(initialVelocity, simulatedVelocity);
+    CopyVector(clientPos, simulatedPosition);
+    CopyVector(clientPos, prevPosition);
+    
     for (int i = 1; i <= MAX_PREDICTION_POINTS; i++)
     {
-        float simulatedVelocity[3], simulatedPosition[3];
-        CopyVector(predictedVelocity, simulatedVelocity);
-        CopyVector(clientPos, simulatedPosition);
+        float nextSimulatedVelocity[3], nextSimulatedPosition[3];
+        CopyVector(simulatedVelocity, nextSimulatedVelocity);
+        CopyVector(simulatedPosition, nextSimulatedPosition);
         
         // Simulate movement for this point
-        SimulatePoint(client, simulatedPosition, simulatedVelocity, i * g_flTickInterval);
+        SimulatePoint(client, nextSimulatedPosition, nextSimulatedVelocity, g_flTickInterval);
         
         // Draw beam
         TE_SetupBeamPoints(
-            (i == 1) ? clientPos : endPos, 
-            simulatedPosition, 
+            prevPosition, 
+            nextSimulatedPosition, 
             beamSprite, 
             0, // haloindex
             0, // startframe
@@ -655,77 +722,15 @@ void VisualizePredictedTrajectory(int client, const float predictedVelocity[3])
         );
         TE_SendToClient(client);
         
-        CopyVector(simulatedPosition, endPos);
+        CopyVector(nextSimulatedVelocity, simulatedVelocity);
+        CopyVector(nextSimulatedPosition, prevPosition);
+        CopyVector(nextSimulatedPosition, simulatedPosition);
     }
 
     char velocityText[128];
-    float speed = GetVectorLength(predictedVelocity);
+    float speed = GetVectorLength(simulatedVelocity);
     Format(velocityText, sizeof(velocityText), "Predicted Speed: %.2f u/s", speed);
     PrintHintText(client, velocityText);
-}
-
-void SimulatePoint(int client, float position[3], float velocity[3], float time)
-{
-    float airAccelerate = g_cvAirAccelerate.FloatValue;
-    float maxSpeed = g_cvMaxVelocity.FloatValue;
-    
-    float wishDir[3], clientEyeAngles[3];
-    GetClientEyeAngles(client, clientEyeAngles);
-    float forwardMove = GetEntPropFloat(client, Prop_Data, "m_flForwardMove");
-    float sideMove = GetEntPropFloat(client, Prop_Data, "m_flSideMove");
-    GetWishDir(clientEyeAngles, forwardMove, sideMove, wishDir);
-
-    int steps = RoundToFloor(time / g_flTickInterval);
-    
-    for (int i = 0; i < steps; i++)
-    {
-        // Apply gravity
-        StartGravity(client);
-        
-        // Apply air acceleration, we're not comfortable using the actual functions yet.
-        float speed = GetVectorLength(velocity);
-        float addSpeed = maxSpeed - speed;
-        if (addSpeed > 0)
-        {
-            float accelSpeed = airAccelerate * MAX_WISH_SPEED * g_flTickInterval;
-            if (accelSpeed > addSpeed)
-            {
-                accelSpeed = addSpeed;
-            }
-            
-            for (int j = 0; j < 3; j++)
-            {
-                velocity[j] += accelSpeed * wishDir[j];
-            }
-        }
-        
-        // Finish gravity application
-        FinishGravity(client);
-        
-        // Update position
-        for (int j = 0; j < 3; j++)
-        {
-            position[j] += velocity[j] * g_flTickInterval;
-        }
-        
-        // Check for collision and clip velocity if necessary
-        float endPos[3];
-        CopyVector(position, endPos);
-        
-        TR_TraceRayFilter(position, endPos, MASK_PLAYERSOLID, RayType_EndPoint, TraceFilter_World, client);
-        
-        if (TR_DidHit())
-        {
-            float normal[3];
-            TR_GetPlaneNormal(null, normal);
-            
-            float newVelocity[3];
-            ClipVelocity(velocity, normal, newVelocity, 1.0);
-            CopyVector(newVelocity, velocity);
-            
-            TR_GetEndPosition(position);
-        }
-    }
 }
 
 bool IsValidClient(int client) {
