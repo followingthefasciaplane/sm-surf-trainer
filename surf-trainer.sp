@@ -39,7 +39,7 @@ int g_iBoardEfficiencyIndex[MAXPLAYERS + 1];
 
 public Plugin myinfo = {
     name = "Surf Trainer",
-    author = "Is it Your Name? Or is it My Name?",
+    author = "JesseTooler",
     description = "A plugin to help players improve their surfing skills",
     version = PLUGIN_VERSION,
     url = "http://www.sourcemod.net/"
