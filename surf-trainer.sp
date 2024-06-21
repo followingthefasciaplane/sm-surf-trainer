@@ -265,7 +265,7 @@ void AirAccelerate(int client, const float vWishDir[3], float flWishSpeed, float
     }
 
     // This is for debug right now, we dont want to be doing this later
-    SetEntPropVector(client, Prop_Data, "m_vecVelocity", vVelocity);
+    // SetEntPropVector(client, Prop_Data, "m_vecVelocity", vVelocity);
 }
 
 void TryPlayerMove(int client, float vOutOrigin[3]) {
