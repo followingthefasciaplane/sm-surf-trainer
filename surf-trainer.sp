@@ -7,11 +7,10 @@
 
 #define PLUGIN_VERSION "3.3"
 #define EPSILON 0.00001
-#define TRACE_DISTANCE 32.0
+#define TRACE_DISTANCE 64.0
 #define MAX_SURFACE_NORMAL_Z 0.7
 #define MIN_SURFACE_NORMAL_Z 0.1
 #define MAX_PREDICTION_POINTS 10
-#define PROCESS_INTERVAL 0.1 
 #define MAX_WISH_SPEED 30.0
 #define MAX_STATS_ENTRIES 100
 
@@ -39,7 +38,7 @@ int g_iBoardEfficiencyIndex[MAXPLAYERS + 1];
 
 public Plugin myinfo = {
     name = "Surf Trainer",
-    author = "JesseTooler",
+    author = "Is it Your Name? Or is it My Name?",
     description = "A plugin to help players improve their surfing skills",
     version = PLUGIN_VERSION,
     url = "http://www.sourcemod.net/"
@@ -110,7 +109,7 @@ public void OnPostThinkPost(int client)
     }
 
     float currentTime = GetGameTime();
-    if (currentTime - g_flLastProcessTime[client] < PROCESS_INTERVAL)
+    if (currentTime - g_flLastProcessTime[client] < g_flTickInterval)
     {
         return;
     }
