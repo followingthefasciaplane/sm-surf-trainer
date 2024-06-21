@@ -677,7 +677,7 @@ void SimulatePoint(int client, float position[3], float velocity[3], float time)
         // Apply gravity
         StartGravity(client);
         
-        // Apply air acceleration
+        // Apply air acceleration, we're not comfortable using the actual functions yet.
         float speed = GetVectorLength(velocity);
         float addSpeed = maxSpeed - speed;
         if (addSpeed > 0)
