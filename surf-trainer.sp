@@ -39,7 +39,7 @@ int g_iBoardEfficiencyIndex[MAXPLAYERS + 1];
 
 public Plugin myinfo = {
     name = "Surf Trainer",
-    author = "Jessetooler",
+    author = "Is it Your Name? Or is it My Name?",
     description = "A plugin to help players improve their surfing skills",
     version = PLUGIN_VERSION,
     url = "http://www.sourcemod.net/"
@@ -352,36 +352,73 @@ bool IsPlayerOnSurfRamp(int client, float surfaceNormal[3])
     GetClientMins(client, mins);
     GetClientMaxs(client, maxs);
 
-    float directions[][3] = {
-        {0.0, 0.0, -1.0},
-        {1.0, 0.0, 0.0},
-        {-1.0, 0.0, 0.0},
-        {0.0, 1.0, 0.0},
-        {0.0, -1.0, 0.0}
+    // Define the directions to trace: down, forward, backward, left, right
+    float directions[5][3] = {
+        {0.0, 0.0, -1.0}, // Down
+        {1.0, 0.0, 0.0},  // Forward
+        {-1.0, 0.0, 0.0}, // Backward
+        {0.0, 1.0, 0.0},  // Left
+        {0.0, -1.0, 0.0}  // Right
     };
 
+    // Get player's eye angles for more accurate forward/backward traces
+    float eyeAngles[3], fw[3];
+    GetClientEyeAngles(client, eyeAngles);
+    GetAngleVectors(eyeAngles, fw, NULL_VECTOR, NULL_VECTOR);
+
+    // Iterate over each direction to perform the trace
     for (int i = 0; i < sizeof(directions); i++)
     {
-        for (int j = 0; j < 3; j++)
+        // Compute the end position for the trace based on the current direction
+        if (i == 1) // Forward
         {
-            endPos[j] = startPos[j] + directions[i][j] * TRACE_DISTANCE;
-        }
-
-        if (TracePlayerBBox(client, startPos, endPos, MASK_PLAYERSOLID, mins, maxs))
-        {
-            TR_GetPlaneNormal(null, surfaceNormal);
-            if (surfaceNormal[2] < MAX_SURFACE_NORMAL_Z && surfaceNormal[2] > MIN_SURFACE_NORMAL_Z)
+            for (int j = 0; j < 3; j++)
             {
-                return true;
+                endPos[j] = startPos[j] + fw[j] * TRACE_DISTANCE;
             }
         }
+        else if (i == 2) // Backward
+        {
+            for (int j = 0; j < 3; j++)
+            {
+                endPos[j] = startPos[j] - fw[j] * TRACE_DISTANCE;
+            }
+        }
+        else
+        {
+            for (int j = 0; j < 3; j++)
+            {
+                endPos[j] = startPos[j] + directions[i][j] * TRACE_DISTANCE;
+            }
+        }
+
+        // Perform the trace
+        Handle trace = TR_TraceHullFilterEx(startPos, endPos, mins, maxs, MASK_PLAYERSOLID, TraceFilter_World, client);
+
+        // Check if the trace hit a surface
+        if (TR_DidHit(trace))
+        {
+            // Retrieve the normal vector of the surface hit by the trace
+            TR_GetPlaneNormal(trace, surfaceNormal);
+
+            // Check if the surface normal is within the surfable range
+            if (surfaceNormal[2] < MAX_SURFACE_NORMAL_Z && surfaceNormal[2] > MIN_SURFACE_NORMAL_Z)
+            {
+                delete trace;
+                return true; // The player is on a surf ramp
+            }
+        }
+
+        delete trace;
     }
 
+    // If no surf ramp was found, return false
     return false;
 }
 
-public bool TraceFilter_World(int entity, int contentsMask) {
-    return entity == 0;
+public bool TraceFilter_World(int entity, int contentsMask, any data)
+{
+    return entity == 0 || (entity > MaxClients);
 }
 
 void AnalyzeBoard(int client, const float surfaceNormal[3]) {
@@ -574,7 +611,8 @@ void StoreEfficiency(int client, float efficiency) {
     g_iBoardEfficiencyIndex[client] = (g_iBoardEfficiencyIndex[client] + 1) % MAX_STATS_ENTRIES;
 }
 
-void VisualizePredictedTrajectory(int client, const float predictedVelocity[3]) {
+void VisualizePredictedTrajectory(int client, const float predictedVelocity[3])
+{
     float clientPos[3], endPos[3];
     GetClientAbsOrigin(client, clientPos);
     
@@ -585,13 +623,14 @@ void VisualizePredictedTrajectory(int client, const float predictedVelocity[3]) 
     // Precache and prepare beam sprite
     int beamSprite = PrecacheModel("materials/sprites/laserbeam.vmt");
     
-    for (int i = 1; i <= MAX_PREDICTION_POINTS; i++) {
+    for (int i = 1; i <= MAX_PREDICTION_POINTS; i++)
+    {
         float simulatedVelocity[3], simulatedPosition[3];
         CopyVector(predictedVelocity, simulatedVelocity);
         CopyVector(clientPos, simulatedPosition);
         
-        // Simulate movement for this point (including Z for accuracy)
-        SimulatePoint(simulatedPosition, simulatedVelocity, i * g_flTickInterval);
+        // Simulate movement for this point
+        SimulatePoint(client, simulatedPosition, simulatedVelocity, i * g_flTickInterval);
         
         // Draw beam
         TE_SetupBeamPoints(
@@ -620,37 +659,66 @@ void VisualizePredictedTrajectory(int client, const float predictedVelocity[3]) 
     PrintHintText(client, velocityText);
 }
 
-void SimulatePoint(float position[3], float velocity[3], float time) {
-    float gravity = g_cvGravity.FloatValue;
+void SimulatePoint(int client, float position[3], float velocity[3], float time)
+{
     float airAccelerate = g_cvAirAccelerate.FloatValue;
     float maxSpeed = g_cvMaxVelocity.FloatValue;
     
-    float timeStep = 0.01; // Smaller time step for more accurate simulation
-    int steps = RoundToFloor(time / timeStep);
+    float wishDir[3], clientEyeAngles[3];
+    GetClientEyeAngles(client, clientEyeAngles);
+    float forwardMove = GetEntPropFloat(client, Prop_Data, "m_flForwardMove");
+    float sideMove = GetEntPropFloat(client, Prop_Data, "m_flSideMove");
+    GetWishDir(clientEyeAngles, forwardMove, sideMove, wishDir);
+
+    int steps = RoundToFloor(time / g_flTickInterval);
     
-    float wishDir[3] = {0.0, 0.0, 0.0}; // Assume forward movement, adjust as needed
-    
-    for (int i = 0; i < steps; i++) {
+    for (int i = 0; i < steps; i++)
+    {
         // Apply gravity
-        velocity[2] -= gravity * timeStep;
+        StartGravity(client);
         
         // Apply air acceleration
         float speed = GetVectorLength(velocity);
         float addSpeed = maxSpeed - speed;
-        if (addSpeed > 0) {
-            float accelSpeed = airAccelerate * maxSpeed * timeStep;
-            if (accelSpeed > addSpeed) {
+        if (addSpeed > 0)
+        {
+            float accelSpeed = airAccelerate * maxSpeed * g_flTickInterval;
+            if (accelSpeed > addSpeed)
+            {
                 accelSpeed = addSpeed;
             }
             
-            for (int j = 0; j < 3; j++) {
+            for (int j = 0; j < 3; j++)
+            {
                 velocity[j] += accelSpeed * wishDir[j];
             }
         }
         
+        // Finish gravity application
+        FinishGravity(client);
+        
         // Update position
-        for (int j = 0; j < 3; j++) {
-            position[j] += velocity[j] * timeStep;
+        for (int j = 0; j < 3; j++)
+        {
+            position[j] += velocity[j] * g_flTickInterval;
+        }
+        
+        // Check for collision and clip velocity if necessary
+        float endPos[3];
+        CopyVector(position, endPos);
+        
+        TR_TraceRayFilter(position, endPos, MASK_PLAYERSOLID, RayType_EndPoint, TraceFilter_World, client);
+        
+        if (TR_DidHit())
+        {
+            float normal[3];
+            TR_GetPlaneNormal(null, normal);
+            
+            float newVelocity[3];
+            ClipVelocity(velocity, normal, newVelocity, 1.0);
+            CopyVector(newVelocity, velocity);
+            
+            TR_GetEndPosition(position);
         }
     }
 }
@@ -659,40 +727,7 @@ bool IsValidClient(int client) {
     return (client > 0 && client <= MaxClients && IsClientConnected(client) && IsClientInGame(client) && !IsFakeClient(client));
 }
 
-void AngleVectors(const float angles[3], float forward[3], float right[3], float up[3])
-{
-    float radX = DegToRad(angles[0]);
-    float radY = DegToRad(angles[1]);
-    float radZ = DegToRad(angles[2]);
 
-    float sp = Sine(radX), cp = Cosine(radX);
-    float sy = Sine(radY), cy = Cosine(radY);
-    float sr = Sine(radZ), cr = Cosine(radZ);
-
-    if (forward)
-    {
-        forward[0] = cp * cy;
-        forward[1] = cp * sy;
-        forward[2] = -sp;
-    }
-
-    if (right)
-    {
-        right[0] = -sr * sp * cy + cr * -sy;
-        right[1] = -sr * sp * sy + cr * cy;
-        right[2] = -sr * cp;
-    }
-
-    if (up)
-    {
-        up[0] = cr * sp * cy + -sr * -sy;
-        up[1] = cr * sp * sy + -sr * cy;
-        up[2] = cr * cp;
-    }
-}
-
-
-/*
 void AngleVectors(const float angles[3], float fw[3], float right[3], float up[3])
 {
     float sr, sp, sy, cr, cp, cy;
@@ -729,12 +764,12 @@ void AngleVectors(const float angles[3], float fw[3], float right[3], float up[3
         up[2] = cr * cp;
     }
 }
-*/
 
 void ZeroVector(float vec[3]) {
     vec[0] = vec[1] = vec[2] = 0.0;
 }
 
+/*
 void ClampVelocity(float velocity[3], float maxVelocity)
 {
     for (int i = 0; i < 3; i++)
@@ -745,18 +780,7 @@ void ClampVelocity(float velocity[3], float maxVelocity)
             velocity[i] = -maxVelocity;
     }
 }
-
-void NormalizeVector(float in[3], float out[3])
-{
-    float length = GetVectorLength(in);
-    if (length > 0.0)
-    {
-        for (int i = 0; i < 3; i++)
-        {
-            out[i] = in[i] / length;
-        }
-    }
-}
+*/
 
 void CopyVector(const float src[3], float dest[3])
 {
