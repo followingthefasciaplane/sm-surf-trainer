@@ -682,7 +682,7 @@ void SimulatePoint(int client, float position[3], float velocity[3], float time)
         float addSpeed = maxSpeed - speed;
         if (addSpeed > 0)
         {
-            float accelSpeed = airAccelerate * maxSpeed * g_flTickInterval;
+            float accelSpeed = airAccelerate * MAX_WISH_SPEED * g_flTickInterval;
             if (accelSpeed > addSpeed)
             {
                 accelSpeed = addSpeed;
