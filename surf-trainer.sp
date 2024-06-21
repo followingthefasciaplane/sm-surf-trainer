@@ -264,6 +264,7 @@ void AirAccelerate(int client, const float vWishDir[3], float flWishSpeed, float
         vVelocity[i] += flAccelSpeed * vWishDir[i];
     }
 
+    // This is for debug right now, we dont want to be doing this later
     SetEntPropVector(client, Prop_Data, "m_vecVelocity", vVelocity);
 }
 
