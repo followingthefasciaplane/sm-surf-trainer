@@ -1,0 +1,133 @@
+"Phrases"
+{
+    "PerfectBoard"
+    {
+        "#format"   "{1:.2f}"
+        "en"        "Perfect board! Speed gain: {1} u/s"
+    }
+
+    "ImprovementNeeded"
+    {
+        "#format"   "{1:.2f}"
+        "en"        "Room for improvement. Speed gain: {1} u/s"
+    }
+
+    "GoodBoardExit"
+    {
+        "en"        "Good board exit!"
+    }
+
+    "PoorBoardExit"
+    {
+        "en"        "Poor board exit. Try to maintain speed after leaving the ramp."
+    }
+
+    "BoardEfficiency"
+    {
+        "#format"   "{1:.2f}"
+        "en"        "Board Efficiency: {1}%"
+    }
+
+    "OverallEfficiency"
+    {
+        "#format"   "{1:.2f}"
+        "en"        "Overall Efficiency: {1}%"
+    }
+
+    "SurfAngle"
+    {
+        "#format"   "{1:.1f}"
+        "en"        "Surf Angle: {1}°"
+    }
+
+    "PredictedSpeed"
+    {
+        "#format"   "{1:.2f}"
+        "en"        "Predicted Speed: {1} u/s"
+    }
+
+    "BoardAnalysis"
+    {
+        "#format"   "{1:s},{2:s},{3:s},{4:s},{5:s}"
+        "en"        "{1}\n{2}\n{3}\n{4}\n{5}"
+    }
+
+    "SurfStats"
+    {
+        "#format"   "{1:s},{2:d},{3:s},{4:s},{5:.2f}"
+        "en"        "Average Efficiency: {1}\nTotal Boards: {2}\nBest Efficiency: {3}\nAverage Speed: {4} u/s\nTotal Air Time: {5} seconds"
+    }
+
+    "PlayerStuck"
+    {
+        "en"        "You seem to be stuck on the ramp. Try adjusting your angle or speed."
+    }
+
+    "SettingsMenuTitle"
+    {
+        "en"        "Surf Trainer Settings"
+    }
+
+    "ToggleDebugMode"
+    {
+        "en"        "Toggle Debug Mode"
+    }
+
+    "AdjustPerfectThreshold"
+    {
+        "en"        "Adjust Perfect Board Threshold"
+    }
+
+    "ChangeHUDColor"
+    {
+        "en"        "Change HUD Color"
+    }
+
+    "DebugModeToggled"
+    {
+        "#format"   "{1:s}"
+        "en"        "Debug mode has been {1}."
+    }
+
+    "AdjustPerfectThresholdTitle"
+    {
+        "en"        "Adjust Perfect Board Threshold"
+    }
+
+    "ThresholdUpdated"
+    {
+        "#format"   "{1:.1f}"
+        "en"        "Perfect board threshold updated to {1}"
+    }
+
+    "ChangeHUDColorTitle"
+    {
+        "en"        "Change HUD Color"
+    }
+
+    "ColorGreen"
+    {
+        "en"        "Green"
+    }
+
+    "ColorYellow"
+    {
+        "en"        "Yellow"
+    }
+
+    "ColorRed"
+    {
+        "en"        "Red"
+    }
+
+    "ColorBlue"
+    {
+        "en"        "Blue"
+    }
+
+    "HUDColorUpdated"
+    {
+        "#format"   "{1:s}"
+        "en"        "HUD color updated to {1}"
+    }
+}
