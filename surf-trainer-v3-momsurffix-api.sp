@@ -863,8 +863,8 @@ public int HelpMenuHandler(Menu menu, MenuAction action, int param1, int param2)
 void DisplaySurfingBasics(int client) {
     PrintToChat(client, "Surfing Basics:");
     PrintToChat(client, "1. Approach the ramp at an angle");
-    PrintToChat(client, "2. Don't press any movement keys while on the ramp");
-    PrintToChat(client, "3. Use your mouse to control your movement");
+    PrintToChat(client, "2. Don't press any movement keys while on the ramp. Always press W on the ramp.");
+    PrintToChat(client, "3. Use your mouse to control your movement. Joystick is also recommended.");
     PrintToChat(client, "4. Try to maintain a consistent angle on the ramp");
 }
 
