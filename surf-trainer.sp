@@ -1,4 +1,4 @@
-//wip
+// wip
 
 #include <sourcemod>
 #include <sdktools>
@@ -7,28 +7,31 @@
 #pragma semicolon 1
 #pragma newdecls required
 
-#define PLUGIN_VERSION "3.3"
+#define PLUGIN_VERSION "3.4"
 #define EPSILON 0.00001
 #define TRACE_DISTANCE 64.0
 #define MAX_SURFACE_NORMAL_Z 0.7
+#define MAX_CLIP_PLANES 4
 #define MIN_SURFACE_NORMAL_Z 0.1
 #define MAX_PREDICTION_POINTS 10
 #define MAX_WISH_SPEED 30.0
 #define MAX_STATS_ENTRIES 100
+#define VELOCITY_THRESHOLD 50.0 // Minimum velocity change threshold for trajectory update
 
 ConVar g_cvAirAccelerate;
 ConVar g_cvMaxVelocity;
 ConVar g_cvGravity;
 ConVar g_cvDebugMode;
 ConVar g_cvPerfectBoardThreshold;
+ConVar g_cvMaxSpeed;
 
 bool g_bDebugMode;
 float g_flTickInterval;
 float g_flPerfectBoardThreshold;
-Handle g_hCheckClientsTimer = INVALID_HANDLE;
+Handle g_hCheckClientsTimer = INVALID_HANDLE; //TODO
 Handle g_hHudSync;
 
-// player-specific variables
+// Player-specific variables
 float g_vVelocity[MAXPLAYERS + 1][3];
 float g_vOrigin[MAXPLAYERS + 1][3];
 bool g_bTouchingRamp[MAXPLAYERS + 1];
@@ -38,13 +41,8 @@ float g_flLastProcessTime[MAXPLAYERS + 1];
 float g_flBoardEfficiencies[MAXPLAYERS + 1][MAX_STATS_ENTRIES];
 int g_iBoardEfficiencyIndex[MAXPLAYERS + 1];
 
-public Plugin myinfo = {
-    name = "Surf Trainer",
-    author = "Is it Your Name? Or is it My Name?",
-    description = "A plugin to help players improve their surfing skills",
-    version = PLUGIN_VERSION,
-    url = "http://www.sourcemod.net/"
-};
+// Cached trajectory points for performance
+float g_vLastTrajectoryPos[MAXPLAYERS + 1][3];
 
 public void OnPluginStart() {
     CreateConVar("sm_surftrainer_version", PLUGIN_VERSION, "Surf trainer version", FCVAR_NOTIFY | FCVAR_DONTRECORD);
@@ -52,6 +50,7 @@ public void OnPluginStart() {
     g_cvAirAccelerate = FindConVar("sv_airaccelerate");
     g_cvMaxVelocity = FindConVar("sv_maxvelocity");
     g_cvGravity = FindConVar("sv_gravity");
+    g_cvMaxSpeed = FindConVar("sv_maxspeed"); // TODO
     g_cvDebugMode = CreateConVar("sm_surftrainer_debug", "0", "Enable debug mode", FCVAR_NOTIFY, true, 0.0, true, 1.0);
     g_cvPerfectBoardThreshold = CreateConVar("sm_surftrainer_threshold", "2.0", "Threshold for perfect board detection (in units)", FCVAR_NOTIFY, true, 0.0);
 
@@ -69,10 +68,109 @@ public void OnPluginStart() {
         }
     }
 
-    g_hHudSync = CreateHudSynchronizer();
+    g_hHudSync = CreateHudSynchronizer(); // TODO
 
     AutoExecConfig(true, "surf-trainer");
-} 
+}
+
+public Action Command_SurfStats(int client, int args) {
+    if (!IsValidClient(client)) return Plugin_Handled;
+
+    float avgEfficiency = CalculateAverageEfficiency(client);
+    int totalBoards = GetTotalBoards(client);
+    float bestEfficiency = GetBestEfficiency(client);
+    float recentAvgEfficiency = CalculateRecentAverageEfficiency(client, 10); // Last 10 boards
+
+    DisplaySurfStatsHUD(client, avgEfficiency, totalBoards, bestEfficiency, recentAvgEfficiency);
+
+    return Plugin_Handled;
+}
+
+void ZeroVector(float vec[3]) {
+    vec[0] = vec[1] = vec[2] = 0.0;
+}
+
+void CopyVector(const float src[3], float dest[3]) {
+    dest[0] = src[0];
+    dest[1] = src[1];
+    dest[2] = src[2];
+}
+
+bool IsPlayerOnSurfRamp(int client, float surfaceNormal[3])
+{
+    float startPos[3], endPos[3], mins[3], maxs[3];
+    GetClientAbsOrigin(client, startPos);
+    GetClientMins(client, mins);
+    GetClientMaxs(client, maxs);
+
+    // Define the directions to trace: down, forward, backward, left, right
+    float directions[5][3] = {
+        {0.0, 0.0, -1.0}, // Down
+        {1.0, 0.0, 0.0},  // Forward
+        {-1.0, 0.0, 0.0}, // Backward
+        {0.0, 1.0, 0.0},  // Left
+        {0.0, -1.0, 0.0}  // Right
+    };
+
+    // Get player's eye angles for more accurate forward/backward traces
+    float eyeAngles[3], fw[3];
+    GetClientEyeAngles(client, eyeAngles);
+    GetAngleVectors(eyeAngles, fw, NULL_VECTOR, NULL_VECTOR);
+
+    // Iterate over each direction to perform the trace
+    for (int i = 0; i < sizeof(directions); i++)
+    {
+        // Compute the end position for the trace based on the current direction
+        if (i == 1) // Forward
+        {
+            for (int j = 0; j < 3; j++)
+            {
+                endPos[j] = startPos[j] + fw[j] * TRACE_DISTANCE;
+            }
+        }
+        else if (i == 2) // Backward
+        {
+            for (int j = 0; j < 3; j++)
+            {
+                endPos[j] = startPos[j] - fw[j] * TRACE_DISTANCE;
+            }
+        }
+        else
+        {
+            for (int j = 0; j < 3; j++)
+            {
+                endPos[j] = startPos[j] + directions[i][j] * TRACE_DISTANCE;
+            }
+        }
+
+        // Perform the trace
+        Handle trace = TR_TraceHullFilterEx(startPos, endPos, mins, maxs, MASK_PLAYERSOLID, TraceFilter_World, client);
+
+        // Check if the trace hit a surface
+        if (TR_DidHit(trace))
+        {
+            // Retrieve the normal vector of the surface hit by the trace
+            TR_GetPlaneNormal(trace, surfaceNormal);
+
+            // Check if the surface normal is within the surfable range
+            if (surfaceNormal[2] < MAX_SURFACE_NORMAL_Z && surfaceNormal[2] > MIN_SURFACE_NORMAL_Z)
+            {
+                delete trace;
+                return true; // The player is on a surf ramp
+            }
+        }
+
+        delete trace;
+    }
+
+    // If no surf ramp was found, return false
+    return false;
+}
+
+public bool TraceFilter_World(int entity, int contentsMask, any data)
+{
+    return entity == 0 || (entity > MaxClients);
+}
 
 public void OnClientPutInServer(int client) {
     SDKHook(client, SDKHook_PostThinkPost, OnPostThinkPost);
@@ -90,6 +188,7 @@ void ResetClientState(int client) {
     ZeroVector(g_vVelocity[client]);
     ZeroVector(g_vOrigin[client]);
     ZeroVector(g_vPreBoardVelocity[client]);
+    ZeroVector(g_vLastTrajectoryPos[client]);
     g_iBoardEfficiencyIndex[client] = 0;
     for (int i = 0; i < MAX_STATS_ENTRIES; i++) {
         g_flBoardEfficiencies[client][i] = 0.0;
@@ -183,8 +282,10 @@ void SimulatePlayerMovement(int client)
     CopyVector(g_vOrigin[client], vSimulatedOrigin);
     PhysicsSimulate(client, vSimulatedVelocity, vSimulatedOrigin);
 
-    // Visualize predicted trajectory
-    VisualizePredictedTrajectory(client, vSimulatedVelocity);
+    // Visualize predicted trajectory, only update if significant velocity change
+    if (HasSignificantVelocityChange(client, vSimulatedVelocity)) {
+        VisualizePredictedTrajectory(client, vSimulatedVelocity);
+    }
 
     if (g_bDebugMode) {
         float xyVelocity[3];
@@ -206,6 +307,44 @@ void FinishGravity(int client) {
     float flGravity = g_cvGravity.FloatValue;
     g_vVelocity[client][2] -= (flGravity * 0.5 * g_flTickInterval);
 }
+
+void AngleVectors(const float angles[3], float fw[3], float right[3], float up[3])
+{
+    float sr, sp, sy, cr, cp, cy;
+    
+    float radx = DegToRad(angles[0]);
+    float rady = DegToRad(angles[1]);
+    float radz = DegToRad(angles[2]);
+    
+    sp = Sine(radx);
+    cp = Cosine(radx);
+    sy = Sine(rady);
+    cy = Cosine(rady);
+    sr = Sine(radz);
+    cr = Cosine(radz);
+    
+    if (fw[0] != 0.0)
+    {
+        fw[0] = cp * cy;
+        fw[1] = cp * sy;
+        fw[2] = -sp;
+    }
+    
+    if (right[0] != 0.0)
+    {
+        right[0] = (-1 * sr * sp * cy + -1 * cr * -sy);
+        right[1] = (-1 * sr * sp * sy + -1 * cr * cy);
+        right[2] = -1 * sr * cp;
+    }
+    
+    if (up[0] != 0.0)
+    {
+        up[0] = (cr * sp * cy + -sr * -sy);
+        up[1] = (cr * sp * sy + -sr * cy);
+        up[2] = cr * cp;
+    }
+}
+
 
 void AirMove(int client, float vWishDir[3], float vWishVel[3], float &flWishSpeed)
 {
@@ -249,35 +388,46 @@ void AirMove(int client, float vWishDir[3], float vWishVel[3], float &flWishSpee
     AirAccelerate(client, vWishDir, flWishSpeed, g_cvAirAccelerate.FloatValue);
 }
 
-void AirAccelerate(int client, const float vWishDir[3], float flWishSpeed, float flAirAccelerate)
-{
+void AirAccelerate(int client, const float vWishDir[3], float flWishSpeed, float flAirAccelerate) {
+    float flWishSpd = flWishSpeed;
+    
+    // Cap speed
+    if (flWishSpd > MAX_WISH_SPEED) {
+        flWishSpd = MAX_WISH_SPEED;
+    }
+    
+    // Determine veer amount
     float flCurrentSpeed = GetVectorDotProduct(g_vVelocity[client], vWishDir);
-    float flAddSpeed = flWishSpeed - flCurrentSpeed;
-
-    if (flAddSpeed <= 0)
-    {
+    
+    // See how much to add
+    float flAddSpeed = flWishSpd - flCurrentSpeed;
+    
+    if (flAddSpeed <= 0) {
         return;
     }
-
+    
+    // Determine acceleration speed after acceleration
     float flAccelSpeed = flAirAccelerate * flWishSpeed * g_flTickInterval;
-
-    if (flAccelSpeed > flAddSpeed)
-    {
+    
+    // Cap it
+    if (flAccelSpeed > flAddSpeed) {
         flAccelSpeed = flAddSpeed;
     }
-
-    for (int i = 0; i < 3; i++)
-    {
+    
+    for (int i = 0; i < 3; i++) {
         g_vVelocity[client][i] += flAccelSpeed * vWishDir[i];
     }
+    
+    CheckVelocity(client);
 }
 
 void TryPlayerMove(int client, float vOutOrigin[3]) {
-    float vOriginalVelocity[3];
-    CopyVector(g_vVelocity[client], vOriginalVelocity);
+    float vOriginalVelocity[3], vClippedVelocity[3], vTotalLeftToMove[3];
+    float planes[MAX_CLIP_PLANES][3];
+    int numplanes = 0;
+    int i;
     
-    float vClippedVelocity[3];
-    float vTotalLeftToMove[3];
+    CopyVector(g_vVelocity[client], vOriginalVelocity);
     CopyVector(g_vVelocity[client], vTotalLeftToMove);
     float flTimeLeft = g_flTickInterval;
     
@@ -287,7 +437,7 @@ void TryPlayerMove(int client, float vOutOrigin[3]) {
         }
         
         float vEnd[3];
-        for (int i = 0; i < 3; i++) {
+        for (i = 0; i < 3; i++) {
             vEnd[i] = vOutOrigin[i] + vTotalLeftToMove[i] * flTimeLeft;
         }
         
@@ -304,8 +454,38 @@ void TryPlayerMove(int client, float vOutOrigin[3]) {
             
             ClipVelocity(vTotalLeftToMove, vPlaneNormal, vClippedVelocity, 1.0);
             
+            // Store plane for multi-collision resolution
+            if (numplanes < MAX_CLIP_PLANES) {
+                CopyVector(vPlaneNormal, planes[numplanes]);
+                numplanes++;
+            }
+            
             float flDistanceMoved = (flTimeLeft * GetVectorLength(vTotalLeftToMove) - GetVectorLength(vClippedVelocity));
             flTimeLeft -= flTimeLeft * flDistanceMoved / GetVectorLength(vTotalLeftToMove);
+            
+            // Resolve multiple collisions
+            if (numplanes > 1) {
+                for (i = 0; i < numplanes; i++) {
+                    ClipVelocity(vOriginalVelocity, planes[i], vClippedVelocity, 1.0);
+                    
+                    int j;
+                    for (j = 0; j < numplanes; j++) {
+                        if (j != i && GetVectorDotProduct(vClippedVelocity, planes[j]) < 0.0) {
+                            break;
+                        }
+                    }
+                    
+                    if (j == numplanes) {
+                        break;
+                    }
+                }
+                
+                if (i == numplanes) {
+                    // Fully blocked, stop motion
+                    ZeroVector(vClippedVelocity);
+                    break;
+                }
+            }
             
             CopyVector(vClippedVelocity, vTotalLeftToMove);
         } else {
@@ -318,12 +498,11 @@ void TryPlayerMove(int client, float vOutOrigin[3]) {
 }
 
 void ClipVelocity(const float vIn[3], const float vNormal[3], float vOut[3], float flOverbounce) {
-    float flBackoff = GetVectorDotProduct(vIn, vNormal) * flOverbounce;
-    
-    float flChange;
+    float backoff = GetVectorDotProduct(vIn, vNormal) * flOverbounce;
+
     for (int i = 0; i < 3; i++) {
-        flChange = vNormal[i] * flBackoff;
-        vOut[i] = vIn[i] - flChange;
+        float change = vNormal[i] * backoff;
+        vOut[i] = vIn[i] - change;
         
         if (vOut[i] > -EPSILON && vOut[i] < EPSILON) {
             vOut[i] = 0.0;
@@ -331,10 +510,10 @@ void ClipVelocity(const float vIn[3], const float vNormal[3], float vOut[3], flo
     }
     
     // Ensure we don't have any leftover velocity in the normal direction
-    float flAdjust = GetVectorDotProduct(vOut, vNormal);
-    if (flAdjust < 0.0) {
+    float adjust = GetVectorDotProduct(vOut, vNormal);
+    if (adjust < 0.0) {
         for (int i = 0; i < 3; i++) {
-            vOut[i] -= (vNormal[i] * flAdjust);
+            vOut[i] -= (vNormal[i] * adjust);
         }
     }
 }
@@ -343,87 +522,114 @@ void CheckVelocity(int client) {
     float flMaxVelocity = g_cvMaxVelocity.FloatValue;
     
     for (int i = 0; i < 3; i++) {
-        // Use FloatAbs for more precise comparison
         if (FloatAbs(g_vVelocity[client][i]) > flMaxVelocity) {
             g_vVelocity[client][i] = (g_vVelocity[client][i] > 0) ? flMaxVelocity : -flMaxVelocity;
         }
     }
 }
 
-bool IsPlayerOnSurfRamp(int client, float surfaceNormal[3])
-{
-    float startPos[3], endPos[3], mins[3], maxs[3];
-    GetClientAbsOrigin(client, startPos);
-    GetClientMins(client, mins);
-    GetClientMaxs(client, maxs);
-
-    // Define the directions to trace: down, forward, backward, left, right
-    float directions[5][3] = {
-        {0.0, 0.0, -1.0}, // Down
-        {1.0, 0.0, 0.0},  // Forward
-        {-1.0, 0.0, 0.0}, // Backward
-        {0.0, 1.0, 0.0},  // Left
-        {0.0, -1.0, 0.0}  // Right
-    };
-
-    // Get player's eye angles for more accurate forward/backward traces
-    float eyeAngles[3], fw[3];
-    GetClientEyeAngles(client, eyeAngles);
-    GetAngleVectors(eyeAngles, fw, NULL_VECTOR, NULL_VECTOR);
-
-    // Iterate over each direction to perform the trace
-    for (int i = 0; i < sizeof(directions); i++)
-    {
-        // Compute the end position for the trace based on the current direction
-        if (i == 1) // Forward
-        {
-            for (int j = 0; j < 3; j++)
-            {
-                endPos[j] = startPos[j] + fw[j] * TRACE_DISTANCE;
-            }
-        }
-        else if (i == 2) // Backward
-        {
-            for (int j = 0; j < 3; j++)
-            {
-                endPos[j] = startPos[j] - fw[j] * TRACE_DISTANCE;
-            }
-        }
-        else
-        {
-            for (int j = 0; j < 3; j++)
-            {
-                endPos[j] = startPos[j] + directions[i][j] * TRACE_DISTANCE;
-            }
-        }
-
-        // Perform the trace
-        Handle trace = TR_TraceHullFilterEx(startPos, endPos, mins, maxs, MASK_PLAYERSOLID, TraceFilter_World, client);
-
-        // Check if the trace hit a surface
-        if (TR_DidHit(trace))
-        {
-            // Retrieve the normal vector of the surface hit by the trace
-            TR_GetPlaneNormal(trace, surfaceNormal);
-
-            // Check if the surface normal is within the surfable range
-            if (surfaceNormal[2] < MAX_SURFACE_NORMAL_Z && surfaceNormal[2] > MIN_SURFACE_NORMAL_Z)
-            {
-                delete trace;
-                return true; // The player is on a surf ramp
-            }
-        }
-
-        delete trace;
+// TODO
+bool HasSignificantVelocityChange(int client, const float newVelocity[3]) {
+    float deltaVelocity[3];
+    for (int i = 0; i < 3; i++) {
+        deltaVelocity[i] = FloatAbs(g_vVelocity[client][i] - g_vLastTrajectoryPos[client][i]);
     }
-
-    // If no surf ramp was found, return false
-    return false;
+    
+    return (GetVectorLength(deltaVelocity) > VELOCITY_THRESHOLD);
 }
 
-public bool TraceFilter_World(int entity, int contentsMask, any data)
+void VisualizePredictedTrajectory(int client, const float initialVelocity[3])
 {
-    return entity == 0 || (entity > MaxClients);
+    float clientPos[3];
+    GetClientAbsOrigin(client, clientPos);
+    
+    int color[4] = {0, 255, 0, 255}; // Green color
+    float beamWidth = 1.0; // Reduced beam width for less visual clutter
+    float beamLife = 0.1; // Short life for quick updates
+    
+    // Precache and prepare beam sprite
+    int beamSprite = PrecacheModel("materials/sprites/laserbeam.vmt");
+    
+    float simulatedVelocity[3], simulatedPosition[3], prevPosition[3];
+    CopyVector(initialVelocity, simulatedVelocity);
+    CopyVector(clientPos, simulatedPosition);
+    CopyVector(clientPos, prevPosition);
+    
+    for (int i = 1; i <= MAX_PREDICTION_POINTS; i++)
+    {
+        float nextSimulatedVelocity[3], nextSimulatedPosition[3];
+        CopyVector(simulatedVelocity, nextSimulatedVelocity);
+        CopyVector(simulatedPosition, nextSimulatedPosition);
+        
+        // Simulate movement for this point
+        SimulatePoint(client, nextSimulatedPosition, nextSimulatedVelocity, g_flTickInterval);
+        
+        // Draw beam
+        TE_SetupBeamPoints(
+            prevPosition, 
+            nextSimulatedPosition, 
+            beamSprite, 
+            0, // haloindex
+            0, // startframe
+            60, // framerate (increased for smoother animation)
+            beamLife, 
+            beamWidth, 
+            beamWidth, // endwidth (constant width for simplicity)
+            1, // fadeLength
+            0.0, // amplitude
+            color, 
+            0 // speed
+        );
+        TE_SendToClient(client);
+        
+        CopyVector(nextSimulatedVelocity, simulatedVelocity);
+        CopyVector(nextSimulatedPosition, prevPosition);
+        CopyVector(nextSimulatedPosition, simulatedPosition);
+    }
+
+    char velocityText[128];
+    float speed = GetVectorLength(simulatedVelocity);
+    Format(velocityText, sizeof(velocityText), "Predicted Speed: %.2f u/s", speed);
+    PrintHintText(client, velocityText);
+
+    // Update the last trajectory position for comparison in future ticks
+    CopyVector(simulatedVelocity, g_vLastTrajectoryPos[client]);
+}
+
+bool IsValidClient(int client) {
+    return (client > 0 && client <= MaxClients && IsClientConnected(client) && IsClientInGame(client) && !IsFakeClient(client));
+}
+
+void SimulatePoint(int client, float position[3], float velocity[3], float time)
+{
+    int steps = RoundToFloor(time / g_flTickInterval);
+    
+    for (int i = 0; i < steps; i++)
+    {
+        float simulatedVelocity[3], simulatedPosition[3];
+        CopyVector(velocity, simulatedVelocity);
+        CopyVector(position, simulatedPosition);
+        
+        PhysicsSimulate(client, simulatedVelocity, simulatedPosition);
+        
+        CopyVector(simulatedVelocity, velocity);
+        CopyVector(simulatedPosition, position);
+        
+        // Check for collision
+        TR_TraceRayFilter(position, simulatedPosition, MASK_PLAYERSOLID, RayType_EndPoint, TraceFilter_World, client);
+        
+        if (TR_DidHit())
+        {
+            float normal[3];
+            TR_GetPlaneNormal(null, normal);
+            
+            float newVelocity[3];
+            ClipVelocity(velocity, normal, newVelocity, 1.0);
+            CopyVector(newVelocity, velocity);
+            
+            TR_GetEndPosition(position);
+        }
+    }
 }
 
 void AnalyzeBoard(int client, const float surfaceNormal[3]) {
@@ -569,12 +775,6 @@ float CalculateGravitySpeedLoss(const float surfaceNormal[3], float time) {
     return projectedGravityMagnitude * time;
 }
 
-float ClampFloat(float value, float min, float max) {
-    if (value < min) return min;
-    if (value > max) return max;
-    return value;
-}
-
 float CalculateStrafingEfficiency(int client, const float currentVelocity[3], const float idealVelocity[3]) {
     float clientEyeAngles[3];
     GetClientEyeAngles(client, clientEyeAngles);
@@ -613,260 +813,22 @@ void StoreEfficiency(int client, float efficiency) {
     g_iBoardEfficiencyIndex[client] = (g_iBoardEfficiencyIndex[client] + 1) % MAX_STATS_ENTRIES;
 }
 
-/*void SimulatePoint(int client, float position[3], float velocity[3], float time)
-{
-    int steps = RoundToFloor(time / g_flTickInterval);
-    
-    for (int i = 0; i < steps; i++)
-    {
-        float simulatedVelocity[3], simulatedPosition[3];
-        CopyVector(velocity, simulatedVelocity);
-        CopyVector(position, simulatedPosition);
-        
-        PhysicsSimulate(client, simulatedVelocity, simulatedPosition);
-        
-        CopyVector(simulatedVelocity, velocity);
-        CopyVector(simulatedPosition, position);
-        
-        // Check for collision
-        TR_TraceRayFilter(position, simulatedPosition, MASK_PLAYERSOLID, RayType_EndPoint, TraceFilter_World, client);
-        
-        if (TR_DidHit())
-        {
-            float normal[3];
-            TR_GetPlaneNormal(null, normal);
-            
-            float newVelocity[3];
-            ClipVelocity(velocity, normal, newVelocity, 1.0);
-            CopyVector(newVelocity, velocity);
-            
-            TR_GetEndPosition(position);
-        }
-    }
-}
-*/
-
-
-void SimulatePoint(int client, float position[3], float velocity[3], float time)
-{
-    int steps = RoundToFloor(time / g_flTickInterval);
-    
-    for (int i = 0; i < steps; i++)
-    {
-        float simulatedVelocity[3], simulatedPosition[3];
-        CopyVector(velocity, simulatedVelocity);
-        CopyVector(position, simulatedPosition);
-        
-        PhysicsSimulate(client, simulatedVelocity, simulatedPosition);
-        
-        CopyVector(simulatedVelocity, velocity);
-        CopyVector(simulatedPosition, position);
-        
-        // Check for collision
-        TR_TraceRayFilter(position, simulatedPosition, MASK_PLAYERSOLID, RayType_EndPoint, TraceFilter_World, client);
-        
-        if (TR_DidHit())
-        {
-            float normal[3];
-            TR_GetPlaneNormal(null, normal);
-            
-            float newVelocity[3];
-            ClipVelocity(velocity, normal, newVelocity, 1.0);
-            CopyVector(newVelocity, velocity);
-            
-            TR_GetEndPosition(position);
-        }
-    }
+// Utility function to display analysis feedback on HUD.. TODO
+void DisplayBoardAnalysisHUD(int client, const char[] speedFeedback, const char[] alignmentFeedback, const char[] strafingFeedback, const char[] overallFeedback, float efficiency) {
+    char message[512];
+    Format(message, sizeof(message), "Board Analysis:\n%s\n%s\n%s\n%s", 
+        speedFeedback, alignmentFeedback, strafingFeedback, overallFeedback);
+    SendUserMessage(client, message);
 }
 
-void VisualizePredictedTrajectory(int client, const float initialVelocity[3])
-{
-    float clientPos[3];
-    GetClientAbsOrigin(client, clientPos);
-    
-    int color[4] = {0, 255, 0, 255}; // Green color
-    float beamWidth = 1.0; // Reduced beam width for less visual clutter
-    float beamLife = 0.1; // Short life for quick updates
-    
-    // Precache and prepare beam sprite
-    int beamSprite = PrecacheModel("materials/sprites/laserbeam.vmt");
-    
-    float simulatedVelocity[3], simulatedPosition[3], prevPosition[3];
-    CopyVector(initialVelocity, simulatedVelocity);
-    CopyVector(clientPos, simulatedPosition);
-    CopyVector(clientPos, prevPosition);
-    
-    for (int i = 1; i <= MAX_PREDICTION_POINTS; i++)
-    {
-        float nextSimulatedVelocity[3], nextSimulatedPosition[3];
-        CopyVector(simulatedVelocity, nextSimulatedVelocity);
-        CopyVector(simulatedPosition, nextSimulatedPosition);
-        
-        // Simulate movement for this point
-        SimulatePoint(client, nextSimulatedPosition, nextSimulatedVelocity, g_flTickInterval);
-        
-        // Draw beam
-        TE_SetupBeamPoints(
-            prevPosition, 
-            nextSimulatedPosition, 
-            beamSprite, 
-            0, // haloindex
-            0, // startframe
-            60, // framerate (increased for smoother animation)
-            beamLife, 
-            beamWidth, 
-            beamWidth, // endwidth (constant width for simplicity)
-            1, // fadeLength
-            0.0, // amplitude
-            color, 
-            0 // speed
-        );
-        TE_SendToClient(client);
-        
-        CopyVector(nextSimulatedVelocity, simulatedVelocity);
-        CopyVector(nextSimulatedPosition, prevPosition);
-        CopyVector(nextSimulatedPosition, simulatedPosition);
+// Utility function to send user messages
+void SendUserMessage(int client, const char[] message) {
+    Handle hBuffer = StartMessageOne("TextMsg", client, USERMSG_RELIABLE | USERMSG_BLOCKHOOKS);
+    if (hBuffer != null) {
+        BfWriteByte(hBuffer, 4); // HUD_PRINTTALK
+        BfWriteString(hBuffer, message);
+        EndMessage();
     }
-
-    char velocityText[128];
-    float speed = GetVectorLength(simulatedVelocity);
-    Format(velocityText, sizeof(velocityText), "Predicted Speed: %.2f u/s", speed);
-    PrintHintText(client, velocityText);
-}
-
-bool IsValidClient(int client) {
-    return (client > 0 && client <= MaxClients && IsClientConnected(client) && IsClientInGame(client) && !IsFakeClient(client));
-}
-
-
-void AngleVectors(const float angles[3], float fw[3], float right[3], float up[3])
-{
-    float sr, sp, sy, cr, cp, cy;
-    
-    float radx = DegToRad(angles[0]);
-    float rady = DegToRad(angles[1]);
-    float radz = DegToRad(angles[2]);
-    
-    sp = Sine(radx);
-    cp = Cosine(radx);
-    sy = Sine(rady);
-    cy = Cosine(rady);
-    sr = Sine(radz);
-    cr = Cosine(radz);
-    
-    if (fw[0] != 0.0)
-    {
-        fw[0] = cp * cy;
-        fw[1] = cp * sy;
-        fw[2] = -sp;
-    }
-    
-    if (right[0] != 0.0)
-    {
-        right[0] = (-1 * sr * sp * cy + -1 * cr * -sy);
-        right[1] = (-1 * sr * sp * sy + -1 * cr * cy);
-        right[2] = -1 * sr * cp;
-    }
-    
-    if (up[0] != 0.0)
-    {
-        up[0] = (cr * sp * cy + -sr * -sy);
-        up[1] = (cr * sp * sy + -sr * cy);
-        up[2] = cr * cp;
-    }
-}
-
-void ZeroVector(float vec[3]) {
-    vec[0] = vec[1] = vec[2] = 0.0;
-}
-
-/*
-void ClampVelocity(float velocity[3], float maxVelocity)
-{
-    for (int i = 0; i < 3; i++)
-    {
-        if (velocity[i] > maxVelocity)
-            velocity[i] = maxVelocity;
-        else if (velocity[i] < -maxVelocity)
-            velocity[i] = -maxVelocity;
-    }
-}
-*/
-
-void CopyVector(const float src[3], float dest[3])
-{
-    dest[0] = src[0];
-    dest[1] = src[1];
-    dest[2] = src[2];
-}
-
-public void OnPluginEnd() {
-    for (int i = 1; i <= MaxClients; i++) {
-        if (IsClientInGame(i)) {
-            SDKUnhook(i, SDKHook_PostThinkPost, OnPostThinkPost);
-        }
-    }
-    
-    if (g_hHudSync != null) {
-        CloseHandle(g_hHudSync);
-        g_hHudSync = null;
-    }
-}
-
-public void OnMapStart()
-{
-    PrecacheModel("materials/sprites/laserbeam.vmt", true);
-    
-    for (int i = 1; i <= MaxClients; i++)
-    {
-        if (IsClientInGame(i))
-        {
-            ResetClientState(i);
-        }
-    }
-    
-    g_hCheckClientsTimer = CreateTimer(1.0, Timer_CheckClientsOnRamp, _, TIMER_REPEAT|TIMER_FLAG_NO_MAPCHANGE);
-    
-    g_bDebugMode = g_cvDebugMode.BoolValue;
-    g_flTickInterval = GetTickInterval();
-    g_flPerfectBoardThreshold = g_cvPerfectBoardThreshold.FloatValue;
-}
-
-public void OnMapEnd()
-{
-    for (int i = 1; i <= MaxClients; i++)
-    {
-        if (IsClientInGame(i))
-        {
-            SDKUnhook(i, SDKHook_PostThinkPost, OnPostThinkPost);
-        }
-    }
-    
-    // Kill any timers or hooks that were created
-    if (g_hCheckClientsTimer != INVALID_HANDLE)
-    {
-        KillTimer(g_hCheckClientsTimer);
-        g_hCheckClientsTimer = INVALID_HANDLE;
-    }
-    
-    // Reset any global variables
-    g_bDebugMode = false;
-    g_flTickInterval = 0.0;
-    g_flPerfectBoardThreshold = 0.0;
-}
-
-public Action Timer_CheckClientsOnRamp(Handle timer) {
-    for (int i = 1; i <= MaxClients; i++) {
-        if (IsValidClient(i) && IsPlayerAlive(i)) {
-            float surfaceNormal[3];
-            if (IsPlayerOnSurfRamp(i, surfaceNormal)) {               
-                if (g_bDebugMode) {
-                    PrintToConsole(i, "You are on a surf ramp!");
-                }
-            }
-        }
-    }
-    return Plugin_Continue;
 }
 
 float CalculateAverageEfficiency(int client) {
@@ -879,19 +841,6 @@ float CalculateAverageEfficiency(int client) {
         }
     }
     return (count > 0) ? (total / float(count)) : 0.0;
-}
-
-public Action Command_SurfStats(int client, int args) {
-    if (!IsValidClient(client)) return Plugin_Handled;
-
-    float avgEfficiency = CalculateAverageEfficiency(client);
-    int totalBoards = GetTotalBoards(client);
-    float bestEfficiency = GetBestEfficiency(client);
-    float recentAvgEfficiency = CalculateRecentAverageEfficiency(client, 10); // Last 10 boards
-
-    DisplaySurfStatsHUD(client, avgEfficiency, totalBoards, bestEfficiency, recentAvgEfficiency);
-
-    return Plugin_Handled;
 }
 
 int GetTotalBoards(int client) {
@@ -932,50 +881,9 @@ float CalculateRecentAverageEfficiency(int client, int recentCount) {
     return (count > 0) ? (total / float(count)) : 0.0;
 }
 
-void DisplayBoardAnalysisHUD(int client, const char[] speedFeedback, const char[] alignmentFeedback, const char[] strafingFeedback, const char[] overallFeedback, float speedEfficiency) {
-    if (g_hHudSync == null) return;
-
-    // Determine color based on speed efficiency
-    int color1[4], color2[4] = {0, 0, 0, 0}; // color2 is set to black (no secondary color effect)
-    if (speedEfficiency >= 90.0) {
-        color1 = {0, 255, 0, 255}; // Green for excellent performance
-    } else if (speedEfficiency >= 70.0) {
-        color1 = {255, 255, 0, 255}; // Yellow for good performance
-    } else {
-        color1 = {255, 0, 0, 255}; // Red for poor performance
-    }
-
-    SetHudTextParamsEx(-1.0, 0.25, 5.0, color1, color2, 0, 0.1, 0.1, 0.1);
-    ShowSyncHudText(client, g_hHudSync, "Board Analysis:\n%s\n%s\n%s\n%s", 
-        speedFeedback, alignmentFeedback, strafingFeedback, overallFeedback);
-}
-
 void DisplaySurfStatsHUD(int client, float avgEfficiency, int totalBoards, float bestEfficiency, float recentAvgEfficiency) {
-    if (g_hHudSync == null) return;
-
-    char formattedAvgEfficiency[32], formattedBestEfficiency[32], formattedRecentAvgEfficiency[32];
-    
-    FormatEfficiencyWithColor(avgEfficiency, formattedAvgEfficiency, sizeof(formattedAvgEfficiency));
-    FormatEfficiencyWithColor(bestEfficiency, formattedBestEfficiency, sizeof(formattedBestEfficiency));
-    FormatEfficiencyWithColor(recentAvgEfficiency, formattedRecentAvgEfficiency, sizeof(formattedRecentAvgEfficiency));
-
-    int color1[4] = {255, 255, 255, 255}; // White color for stats
-    int color2[4] = {0, 0, 0, 0}; // No secondary color effect
-
-    SetHudTextParamsEx(-1.0, 0.1, 10.0, color1, color2, 0, 0.1, 0.1, 0.1);
-    ShowSyncHudText(client, g_hHudSync, "Surf Statistics:\nAverage Efficiency: %s\nTotal Boards: %d\nBest Efficiency: %s\nRecent Avg (Last 10): %s", 
-        formattedAvgEfficiency, totalBoards, formattedBestEfficiency, formattedRecentAvgEfficiency);
-}
-
-void FormatEfficiencyWithColor(float efficiency, char[] buffer, int bufferSize) {
-    char colorCode[16];
-    if (efficiency >= 90.0) {
-        strcopy(colorCode, sizeof(colorCode), "\x04"); // Green
-    } else if (efficiency >= 70.0) {
-        strcopy(colorCode, sizeof(colorCode), "\x09"); // Yellow
-    } else {
-        strcopy(colorCode, sizeof(colorCode), "\x02"); // Red
-    }
-    
-    Format(buffer, bufferSize, "%s%.2f%%\x01", colorCode, efficiency);
+    char message[256];
+    Format(message, sizeof(message), "Surf Statistics:\nAverage Efficiency: %.2f%%\nTotal Boards: %d\nBest Efficiency: %.2f%%\nRecent Avg (Last 10): %.2f%%", 
+        avgEfficiency, totalBoards, bestEfficiency, recentAvgEfficiency);
+    SendUserMessage(client, message);
 }
